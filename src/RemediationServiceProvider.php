@@ -14,6 +14,7 @@ use Develler\RemediationAgent\Services\CircuitBreakerService;
 use Develler\RemediationAgent\Services\InstructionCacheService;
 use Develler\RemediationAgent\Services\AstExtractorService;
 use Develler\RemediationAgent\Services\MaskingEngine;
+use Develler\RemediationAgent\Services\TelemetryReporter;
 use Throwable;
 
 final class RemediationServiceProvider extends ServiceProvider
@@ -33,6 +34,7 @@ final class RemediationServiceProvider extends ServiceProvider
 
         $this->app->singleton(MaskingEngine::class);
         $this->app->singleton(AstExtractorService::class);
+        $this->app->singleton(TelemetryReporter::class);
 
         $this->app->singleton(AgentConnectionInterface::class, function ($app) {
             return new AgentConnectionService(
@@ -45,6 +47,7 @@ final class RemediationServiceProvider extends ServiceProvider
                 $app->make(AgentConnectionInterface::class),
                 $app->make(MaskingEngine::class),
                 $app->make(CircuitBreakerService::class),
+                $app->make(TelemetryReporter::class),
             );
         });
 

@@ -11,6 +11,7 @@ use Develler\RemediationAgent\DTOs\InstructionCollection;
 use Develler\RemediationAgent\DTOs\MaskRule;
 use Develler\RemediationAgent\Services\CircuitBreakerService;
 use Develler\RemediationAgent\Services\MaskingEngine;
+use Develler\RemediationAgent\Services\TelemetryReporter;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -18,13 +19,13 @@ use Symfony\Component\HttpFoundation\Response;
  *
  * Handle flow:
  *  1. Circuit breaker open?  → pass-through immediately (zero overhead).
- *  2. Load active instructions from Redis (<1ms).
+ *  2. Load active instructions from Redis (<1ms) — latency is measured here.
  *  3. Match route-block rules → 503/custom if matched.
  *  4. Call $next($request) — run the application.
  *  5. Inject configured response headers.
  *  6. JSON response?  → deep-clone, mask PII keys, swap in masked body.
  *  7. HTML response (if html_masking enabled)?  → regex-mask in body string.
- *  8. Return response.
+ *  8. Return response. Telemetry is flushed post-response via shutdown function.
  *
  * On ANY exception in steps 2–7: trip circuit breaker, log silently,
  * return the ORIGINAL unmodified response. Never a partial mask leak.
@@ -35,6 +36,7 @@ final class RemediationInterceptor implements LifecycleInterceptorInterface
         private readonly AgentConnectionInterface $connection,
         private readonly MaskingEngine            $masker,
         private readonly CircuitBreakerService    $breaker,
+        private readonly TelemetryReporter        $reporter,
     ) {}
 
     public function handle(Request $request, Closure $next): Response
@@ -48,13 +50,15 @@ final class RemediationInterceptor implements LifecycleInterceptorInterface
             return $next($request);
         }
 
-        // Step 2 — load instructions from Redis.
+        // Step 2 — load instructions from Redis (measured for telemetry).
+        $t0 = microtime(true);
         try {
             $instructions = $this->connection->getActiveInstructions();
         } catch (\Throwable $e) {
             $this->tripCircuitBreaker($e);
             return $next($request);
         }
+        $latencyMs = (microtime(true) - $t0) * 1000;
 
         if ($instructions->isEmpty()) {
             return $next($request);
@@ -62,8 +66,9 @@ final class RemediationInterceptor implements LifecycleInterceptorInterface
 
         // Step 3 — route-block check (before running the application handler).
         try {
-            $blockResult = $this->interceptRequest($request, $instructions);
+            $blockResult = $this->resolveRouteBlock($request, $instructions);
             if ($blockResult !== null) {
+                $this->reporter->record($request->path(), $request->method(), 'route_block', $latencyMs);
                 return $blockResult;
             }
         } catch (\Throwable $e) {
@@ -71,25 +76,31 @@ final class RemediationInterceptor implements LifecycleInterceptorInterface
             return $next($request);
         }
 
+        // Record telemetry for pass-through requests (primary instruction type).
+        $primaryType = $instructions->hasMaskRules()
+            ? 'pii_mask'
+            : (count($instructions->injectHeaders()) > 0 ? 'header_inject' : 'pii_mask');
+
+        $this->reporter->record($request->path(), $request->method(), $primaryType, $latencyMs);
+
         // Step 4 — run the application.
         $response = $next($request);
 
         // Steps 5–7 — response-phase interception.
-        return $this->interceptResponse($request, $response, $instructions);
+        return $this->applyResponsePhase($request, $response, $instructions);
     }
 
     // -------------------------------------------------------------------------
-    // LifecycleInterceptorInterface
+    // LifecycleInterceptorInterface — public surface
     // -------------------------------------------------------------------------
 
     public function interceptRequest(Request $request): ?Response
     {
-        // Public signature required by interface; actual work uses the overload below.
         $instructions = $this->loadInstructions();
         if ($instructions === null) {
             return null;
         }
-        return $this->matchRouteBlock($request, $instructions);
+        return $this->resolveRouteBlock($request, $instructions);
     }
 
     public function interceptResponse(Request $request, Response $response): Response
@@ -122,10 +133,10 @@ final class RemediationInterceptor implements LifecycleInterceptorInterface
     }
 
     // -------------------------------------------------------------------------
-    // Private — called internally by handle() for the hot path
+    // Private — hot-path helpers called from handle()
     // -------------------------------------------------------------------------
 
-    private function interceptRequest(Request $request, InstructionCollection $instructions): ?Response
+    private function resolveRouteBlock(Request $request, InstructionCollection $instructions): ?Response
     {
         $block = $instructions->matchingRouteBlock($request);
         if ($block === null) {
@@ -138,7 +149,7 @@ final class RemediationInterceptor implements LifecycleInterceptorInterface
         return response()->json($body, $status);
     }
 
-    private function interceptResponse(Request $request, Response $response, InstructionCollection $instructions): Response
+    private function applyResponsePhase(Request $request, Response $response, InstructionCollection $instructions): Response
     {
         try {
             // Step 5 — inject headers.
@@ -186,7 +197,6 @@ final class RemediationInterceptor implements LifecycleInterceptorInterface
         $decoded = json_decode($raw, true);
 
         if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
-            // Malformed or non-array JSON — pass through, not an error.
             return $response;
         }
 
@@ -214,14 +224,6 @@ final class RemediationInterceptor implements LifecycleInterceptorInterface
         $html = $response->getContent();
         if ($html === false || $html === '') {
             return $response;
-        }
-
-        foreach ($maskRules as $rule) {
-            if ($rule->maskStrategy === 'full_redact') {
-                // For HTML we only safely handle full_redact on explicit value patterns.
-                // The key-based approach doesn't apply to unstructured HTML.
-                continue;
-            }
         }
 
         // HTML masking is deliberately minimal — only full_redact on known value patterns.
