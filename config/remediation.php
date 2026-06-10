@@ -2,7 +2,7 @@
 
 return [
 
-    'saas_url'       => env('REMEDIATION_SAAS_URL', ''),
+    'saas_url'       => env('REMEDIATION_SAAS_URL', 'https://app.develler.io'),
     'connection_key' => env('REMEDIATION_CONNECTION_KEY', ''),
 
     'redis' => [

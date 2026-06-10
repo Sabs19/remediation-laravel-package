@@ -30,8 +30,9 @@ final class ConnectCommand extends Command
         $saasUrl       = $this->resolveSaasUrl();
         $connectionKey = $this->resolveConnectionKey();
 
-        if ($saasUrl === '' || $connectionKey === '') {
-            $this->error('REMEDIATION_SAAS_URL must be set and a connection key must be provided.');
+        if ($connectionKey === '') {
+            $this->error('A connection key is required. Pass it as an argument or set REMEDIATION_CONNECTION_KEY.');
+            $this->line('  Usage: php artisan remediation:connect <connection-key>');
             return self::FAILURE;
         }
 
