@@ -3,6 +3,7 @@
 namespace Develler\RemediationAgent\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
@@ -21,7 +22,7 @@ use Throwable;
  */
 final class ConnectCommand extends Command
 {
-    protected $signature   = 'remediation:connect';
+    protected $signature   = 'remediation:connect {key? : Connection key from your Develler dashboard}';
     protected $description = 'Connect this application to Develler.';
 
     public function handle(): int
@@ -30,9 +31,13 @@ final class ConnectCommand extends Command
         $connectionKey = $this->resolveConnectionKey();
 
         if ($saasUrl === '' || $connectionKey === '') {
-            $this->error('REMEDIATION_SAAS_URL and REMEDIATION_CONNECTION_KEY must both be set.');
+            $this->error('REMEDIATION_SAAS_URL must be set and a connection key must be provided.');
             return self::FAILURE;
         }
+
+        $this->info('Running migrations...');
+        Artisan::call('migrate', ['--force' => true]);
+        $this->line(Artisan::output());
 
         $this->info("Connecting to: {$saasUrl}");
 
@@ -110,7 +115,10 @@ final class ConnectCommand extends Command
 
     private function resolveConnectionKey(): string
     {
-        return (string) config('remediation.connection_key', env('REMEDIATION_CONNECTION_KEY', ''));
+        return (string) (
+            $this->argument('key')
+            ?: config('remediation.connection_key', env('REMEDIATION_CONNECTION_KEY', ''))
+        );
     }
 
     private function agentVersion(): ?string
