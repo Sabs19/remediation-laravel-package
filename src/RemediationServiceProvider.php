@@ -5,6 +5,7 @@ namespace Develler\RemediationAgent;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\ServiceProvider;
 use Develler\RemediationAgent\Commands\ConnectCommand;
+use Develler\RemediationAgent\Commands\PollInstructionsCommand;
 use Develler\RemediationAgent\Contracts\AgentConnectionInterface;
 use Develler\RemediationAgent\Contracts\LifecycleInterceptorInterface;
 use Develler\RemediationAgent\Http\Middleware\RemediationInterceptor;
@@ -64,7 +65,10 @@ final class RemediationServiceProvider extends ServiceProvider
         ], 'remediation-config');
 
         if ($this->app->runningInConsole()) {
-            $this->commands([ConnectCommand::class]);
+            $this->commands([
+                ConnectCommand::class,
+                PollInstructionsCommand::class,
+            ]);
         }
 
         $this->registerLoggingChannel();

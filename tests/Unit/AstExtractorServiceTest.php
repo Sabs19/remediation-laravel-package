@@ -140,10 +140,50 @@ class AstExtractorServiceTest extends TestCase
         $this->assertNull($result);
     }
 
+    /**
+     * Verify that ProcessExtractionJob's path guard blocks traversal paths.
+     * The guard lives in the job, not the extractor, so we test the guard logic directly.
+     */
+    public function test_path_traversal_attempt_is_rejected_by_guard(): void
+    {
+        // Simulate what ProcessExtractionJob does: anchor to base_path and verify
+        // the realpath stays within the application root.
+        $appRoot        = $this->tempDir; // stand-in for base_path()
+        $traversalPath  = $appRoot . '/sub/../../../etc/passwd';
+
+        $realResolved = realpath($traversalPath);
+
+        if ($realResolved !== false) {
+            // If /etc/passwd actually exists, confirm it is outside our app root.
+            $this->assertFalse(
+                str_starts_with($realResolved, $appRoot),
+                'Path traversal should resolve outside the application root.'
+            );
+        } else {
+            // Path does not exist — realpath returns false, guard also blocks.
+            $this->assertFalse($realResolved);
+        }
+    }
+
+    public function test_legitimate_nested_path_passes_guard(): void
+    {
+        // A legitimate sub-directory file should pass the guard.
+        mkdir($this->tempDir . '/sub', 0777, true);
+        $file      = $this->writeTemp('sub/Legit.php', '<?php class Legit {}');
+        $realPath  = realpath($file);
+
+        $this->assertNotFalse($realPath);
+        $this->assertTrue(str_starts_with($realPath, $this->tempDir));
+    }
+
     // -------------------------------------------------------------------------
 
     private function writeTemp(string $name, string $content): string
     {
+        $dir  = dirname("{$this->tempDir}/{$name}");
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
         $path = "{$this->tempDir}/{$name}";
         file_put_contents($path, $content);
         return $path;

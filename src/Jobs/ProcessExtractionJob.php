@@ -31,10 +31,22 @@ final class ProcessExtractionJob implements ShouldQueue
         $results = [];
 
         foreach ($this->request->targets as $target) {
-            // Resolve file path relative to base_path() in the host application.
+            // Resolve and validate the file path before touching the filesystem.
+            // base_path() anchors the root; realpath() resolves symlinks and '..' segments.
+            // Any path that escapes the application root is rejected — even if the
+            // envelope was HMAC-verified — to limit blast radius on a compromised SaaS.
             $absolutePath = base_path($target->filePath);
+            $realPath     = realpath($absolutePath);
 
-            $result = $extractor->extract($absolutePath, $target);
+            if ($realPath === false || !str_starts_with($realPath, base_path())) {
+                Log::channel('remediation')->error('ProcessExtractionJob: path traversal attempt blocked.', [
+                    'file'          => $target->filePath,
+                    'extraction_id' => $this->request->extractionId,
+                ]);
+                continue;
+            }
+
+            $result = $extractor->extract($realPath, $target);
 
             if ($result === null) {
                 Log::channel('remediation')->warning('AstExtractor: symbol not found.', [
